@@ -2431,6 +2431,16 @@ class EarthEngineAssessmentService:
                 raise RuntimeError(
                     f"Earth Engine returned an unsupported download URL scheme: {parsed_url.scheme or 'unknown'}."
                 )
+            host = (parsed_url.hostname or "").lower()
+            allowed_hosts = {
+                "earthengine.googleapis.com",
+                "storage.googleapis.com",
+                "googleapis.com",
+            }
+            if not host or not any(host == allowed or host.endswith(f".{allowed}") for allowed in allowed_hosts):
+                raise RuntimeError(
+                    f"Earth Engine returned an unsupported download host: {host or 'unknown'}."
+                )
             with urlopen(download_url) as response, open(output_path, "wb") as handle:
                 handle.write(response.read())
         except HTTPError as exc:
