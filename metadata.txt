@@ -1,0 +1,17 @@
+[general]
+name=Environmental Assessment Studio
+qgisMinimumVersion=4.0
+description=Runs Google Earth Engine environmental assessments from QGIS 4.x with AOI, date-range, raster, vector, and trend-analysis outputs.
+version=4.5.0
+author=Valentine Adolsum Anaba
+email=valentine.anaba@gmail.com
+about=Environmental Assessment Studio is a QGIS 4.x plugin for running Google Earth Engine based environmental assessments over a user-defined area of interest and time period. It supports Land Use Land Cover, Change Detection, Land Surface Temperature, Flood Analysis, NDVI, NDWI, Land Degradation, Drought, Soil Organic Carbon, Wind Direction, Carbon Emission (Biomass), Anthropogenic Emission, Carbon Sequestration, Solar Radiation, Rainfall / Precipitation Anomaly, Soil Moisture, Erosion Risk, Terrain Susceptibility to Erosion and Instability, Wildfire Risk, Air Quality, Habitat Fragmentation, and Groundwater Recharge / Runoff Potential. Outputs include styled rasters, optional vector layers, class-area summary tables, metadata sidecar files, and trend-analysis exports.
+category=Analysis
+icon=icon.svg
+experimental=True
+deprecated=False
+hasProcessingProvider=no
+homepage=https://github.com/adolsum/Environmental-Assessment-Studio
+repository=https://github.com/adolsum/Environmental-Assessment-Studio
+tracker=https://github.com/adolsum/Environmental-Assessment-Studio/issues
+tags=google earth engine,environmental assessment,lulc,change detection,lst,flood,ndvi,ndwi,soil carbon,soil moisture,air quality,wildfire,qgis4
