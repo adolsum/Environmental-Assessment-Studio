@@ -3020,16 +3020,29 @@ class EarthEngineAssessmentService:
             if pixel_value is not None and int(float(pixel_value)) == -9999:
                 delete_feature_ids.append(feature.id())
                 continue
-            class_info = self._class_info_for_value(analysis_id, mode, pixel_value, custom_classes=custom_classes)
+            class_info = self._class_info_for_value(
+                analysis_id,
+                mode,
+                pixel_value,
+                custom_classes=custom_classes,
+            )
             area_square_meters = distance_area.measureArea(feature.geometry())
             layer.changeAttributeValue(feature.id(), label_index, class_info.get("label"))
             layer.changeAttributeValue(feature.id(), code_index, str(pixel_value))
             layer.changeAttributeValue(feature.id(), min_index, class_info.get("min"))
             layer.changeAttributeValue(feature.id(), max_index, class_info.get("max"))
             if min_lb_index >= 0:
-                layer.changeAttributeValue(feature.id(), min_lb_index, self._convert_carbon_value_to_pounds(analysis_id, class_info.get("min")))
+                layer.changeAttributeValue(
+                    feature.id(),
+                    min_lb_index,
+                    self._convert_carbon_value_to_pounds(analysis_id, class_info.get("min")),
+                )
             if max_lb_index >= 0:
-                layer.changeAttributeValue(feature.id(), max_lb_index, self._convert_carbon_value_to_pounds(analysis_id, class_info.get("max")))
+                layer.changeAttributeValue(
+                    feature.id(),
+                    max_lb_index,
+                    self._convert_carbon_value_to_pounds(analysis_id, class_info.get("max")),
+                )
             if analysis_id == "wind_direction" and wind_speed_provider is not None:
                 centroid = feature.geometry().centroid().asPoint()
                 wind_speed, ok = wind_speed_provider.sample(QgsPointXY(centroid), 1)
@@ -3039,7 +3052,7 @@ class EarthEngineAssessmentService:
                         feature.id(),
                         wind_intensity_index,
                         self._wind_intensity_label(float(wind_speed)),
-            )
+                    )
             centroid = feature.geometry().centroid().asPoint()
             if analysis_id == "carbon_emission" and continuous_provider is not None and emission_index >= 0:
                 emission_value, ok = continuous_provider.sample(QgsPointXY(centroid), 1)
