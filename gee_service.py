@@ -1779,12 +1779,12 @@ class EarthEngineAssessmentService:
             for key, value in list(row.items()):
                 if key in {"year", "annual_change"}:
                     continue
-                if (
-                    isinstance(value, (int, float))
-                    and not isinstance(value, bool)
-                    and isinstance(previous_row.get(key), (int, float))
-                    and not isinstance(previous_row.get(key), bool)
-                ):
+                current_is_numeric = isinstance(value, (int, float)) and not isinstance(value, bool)
+                previous_value = previous_row.get(key)
+                previous_is_numeric = isinstance(previous_value, (int, float)) and not isinstance(
+                    previous_value, bool
+                )
+                if current_is_numeric and previous_is_numeric:
                     row[f"{key}_annual_change"] = round(float(value) - float(previous_row[key]), 5)
             previous_row = row
         return rows
@@ -2750,81 +2750,81 @@ class EarthEngineAssessmentService:
     def _source_image_count(self, analysis_id, geometry, start_date, end_date):
         try:
             if analysis_id in {"lulc", "change_detection"}:
-                return int(
+                collection_size = (
                     ee.ImageCollection("GOOGLE/DYNAMICWORLD/V1")
                     .filterBounds(geometry)
                     .filterDate(start_date.isoformat(), end_date.isoformat())
                     .size()
                     .getInfo()
-                    or 0
                 )
+                return int(collection_size or 0)
             if analysis_id in {"lst", "ndvi", "ndwi", "land_degradation", "drought", "soil_moisture", "erosion_risk"}:
                 return int(self._landsat_collection(geometry, start_date, end_date).size().getInfo() or 0)
             if analysis_id == "flood":
-                return int(
+                collection_size = (
                     ee.ImageCollection("COPERNICUS/S1_GRD")
                     .filterBounds(geometry)
                     .filterDate(start_date.isoformat(), end_date.isoformat())
                     .size()
                     .getInfo()
-                    or 0
                 )
+                return int(collection_size or 0)
             if analysis_id == "solar_radiation":
-                return int(
+                collection_size = (
                     ee.ImageCollection("MODIS/062/MCD18C2")
                     .filterBounds(geometry)
                     .filterDate(start_date.isoformat(), end_date.isoformat())
                     .size()
                     .getInfo()
-                    or 0
                 )
+                return int(collection_size or 0)
             if analysis_id == "precipitation_anomaly":
                 return int(self._chirps_collection(geometry, start_date, end_date).size().getInfo() or 0)
             if analysis_id == "wind_direction":
-                return int(
+                collection_size = (
                     ee.ImageCollection("ECMWF/ERA5_LAND/HOURLY")
                     .filterBounds(geometry)
                     .filterDate(start_date.isoformat(), end_date.isoformat())
                     .size()
                     .getInfo()
-                    or 0
                 )
+                return int(collection_size or 0)
             if analysis_id == "carbon_sequestration":
-                return int(
+                collection_size = (
                     ee.ImageCollection("MODIS/061/MOD17A3HGF")
                     .filterBounds(geometry)
                     .filterDate(start_date.isoformat(), end_date.isoformat())
                     .size()
                     .getInfo()
-                    or 0
                 )
+                return int(collection_size or 0)
             if analysis_id == "anthropogenic_emission":
-                return int(
+                collection_size = (
                     ee.ImageCollection("NOAA/VIIRS/DNB/ANNUAL_V22")
                     .filterBounds(geometry)
                     .filterDate(start_date.isoformat(), end_date.isoformat())
                     .size()
                     .getInfo()
-                    or 0
                 )
+                return int(collection_size or 0)
             if analysis_id == "wildfire_risk":
-                return int(
+                collection_size = (
                     ee.ImageCollection("MODIS/061/MCD64A1")
                     .filterBounds(geometry)
                     .filterDate(start_date.isoformat(), end_date.isoformat())
                     .size()
                     .getInfo()
-                    or 0
                 )
+                return int(collection_size or 0)
             if analysis_id == "air_quality":
-                return int(
+                collection_size = (
                     ee.ImageCollection("COPERNICUS/S5P/OFFL/L3_NO2")
                     .filterBounds(geometry)
                     .filterDate(start_date.isoformat(), end_date.isoformat())
                     .size()
                     .getInfo()
-                    or 0
                 )
+                return int(collection_size or 0)
         except Exception:
             return None
         return None
@@ -3041,7 +3041,10 @@ class EarthEngineAssessmentService:
                 layer.changeAttributeValue(
                     feature.id(),
                     max_lb_index,
-                    self._convert_carbon_value_to_pounds(analysis_id, class_info.get("max")),
+                    self._convert_carbon_value_to_pounds(
+                        analysis_id,
+                        class_info.get("max"),
+                    ),
                 )
             if analysis_id == "wind_direction" and wind_speed_provider is not None:
                 centroid = feature.geometry().centroid().asPoint()
