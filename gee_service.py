@@ -10,6 +10,7 @@ import sys
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from urllib.parse import urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
@@ -2425,6 +2426,11 @@ class EarthEngineAssessmentService:
         }
         try:
             download_url = prepared_image.getDownloadURL(params)
+            parsed_url = urlparse(download_url)
+            if parsed_url.scheme.lower() != "https":
+                raise RuntimeError(
+                    f"Earth Engine returned an unsupported download URL scheme: {parsed_url.scheme or 'unknown'}."
+                )
             with urlopen(download_url) as response, open(output_path, "wb") as handle:
                 handle.write(response.read())
         except HTTPError as exc:
