@@ -12,7 +12,7 @@ from datetime import date
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.error import HTTPError, URLError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 import processing
 from qgis.PyQt.QtGui import QColor
@@ -2441,8 +2441,24 @@ class EarthEngineAssessmentService:
                 raise RuntimeError(
                     f"Earth Engine returned an unsupported download host: {host or 'unknown'}."
                 )
-            with urlopen(download_url) as response, open(output_path, "wb") as handle:
-                handle.write(response.read())
+            request = Request(
+                download_url,
+                headers={
+                    "User-Agent": "EnvironmentalAssessmentStudio/4.5",
+                    "Accept": "image/tiff, application/octet-stream",
+                },
+            )
+            # The request is restricted to validated Earth Engine / Google HTTPS hosts above.
+            with urlopen(request, timeout=180) as response, open(output_path, "wb") as handle:  # nosec B310
+                if getattr(response, "status", 200) != 200:
+                    raise RuntimeError(
+                        f"Earth Engine raster download returned HTTP {getattr(response, 'status', 'unknown')}."
+                    )
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
         except HTTPError as exc:
             raise RuntimeError(
                 f"Earth Engine raster download failed with HTTP {exc.code}. "

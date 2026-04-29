@@ -99,6 +99,7 @@ class DependencyManager:
             text=True,
             check=False,
             env=environment,
+            timeout=900,
         )
         self._refresh_dependency_paths()
         return completed.returncode == 0, (completed.stdout or "").strip(), (completed.stderr or "").strip()
