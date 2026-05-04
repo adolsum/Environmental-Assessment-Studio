@@ -863,12 +863,17 @@ class EnvironmentalAssessmentDialog(QDialog):
         )
 
     def save_project_id(self):
-        self.dependency_manager.set_project_id(self.project_id_edit.text())
+        try:
+            normalized_project_id = self.dependency_manager.set_project_id(self.project_id_edit.text())
+        except ValueError as exc:
+            self._show_warning(self.tr("Invalid Earth Engine project ID: {0}").format(str(exc)))
+            return
+        self.project_id_edit.setText(normalized_project_id)
         self.update_dependency_status()
         QMessageBox.information(
             self,
             self.tr("Environmental Assessment Studio"),
-            self.tr("Earth Engine project ID saved for this QGIS profile."),
+            self.tr("Earth Engine project ID saved for this QGIS profile: {0}").format(normalized_project_id),
         )
 
     def _set_settings_busy(self, is_busy):

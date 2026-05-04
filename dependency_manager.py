@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import importlib
 import os
+import re
 import site
 import subprocess
 import sys
+import unicodedata
 from pathlib import Path
 
 from qgis.PyQt.QtCore import QSettings
@@ -18,6 +20,7 @@ class DependencyManager:
     EARTH_ENGINE_PACKAGE = "earthengine-api"
     PLUGIN_DEPENDENCY_DIRNAME = "_python_deps"
     SETTINGS_KEY_PROJECT_ID = "qgis_environmental_assessment_qgis4/earth_engine_project_id"
+    PROJECT_ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
 
     @classmethod
     def qgis_python_path(cls):
@@ -123,10 +126,39 @@ class DependencyManager:
 
     def project_id(self):
         value = QSettings().value(self.SETTINGS_KEY_PROJECT_ID, "", type=str)
-        return (value or "").strip()
+        return self.normalize_project_id(value)
 
     def set_project_id(self, project_id):
-        QSettings().setValue(self.SETTINGS_KEY_PROJECT_ID, (project_id or "").strip())
+        normalized = self.validate_project_id(project_id)
+        QSettings().setValue(self.SETTINGS_KEY_PROJECT_ID, normalized)
+        return normalized
+
+    @classmethod
+    def normalize_project_id(cls, project_id):
+        value = unicodedata.normalize("NFKC", (project_id or ""))
+        for character in ("\u200b", "\u200c", "\u200d", "\ufeff"):
+            value = value.replace(character, "")
+        for dash in ("\u2010", "\u2011", "\u2012", "\u2013", "\u2014", "\u2212"):
+            value = value.replace(dash, "-")
+        return value.strip().lower()
+
+    @classmethod
+    def validate_project_id(cls, project_id):
+        normalized = cls.normalize_project_id(project_id)
+        if not normalized:
+            raise ValueError("Enter the Google Cloud project ID registered for Earth Engine.")
+        if any(character.isspace() for character in normalized):
+            raise ValueError(
+                "Project IDs cannot contain spaces. Enter the actual Google Cloud project ID, not the display name."
+            )
+        if "_" in normalized:
+            raise ValueError("Project IDs cannot contain underscores. Use the Google Cloud project ID exactly as shown.")
+        if not cls.PROJECT_ID_PATTERN.match(normalized):
+            raise ValueError(
+                "Project IDs must be 6 to 30 characters, start with a letter, use only lowercase letters, numbers, "
+                "or hyphens, and cannot end with a hyphen."
+            )
+        return normalized
 
     def _refresh_dependency_paths(self):
         dependency_path = self.plugin_dependency_path()
