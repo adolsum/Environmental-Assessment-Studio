@@ -22,15 +22,15 @@ def write_table_csv(rows, csv_path):
     return str(output_path)
 
 
-def write_table_xlsx(rows, xlsx_path, sheet_name="Sheet1"):
+def write_table_xlsx(rows, xlsx_path, sheet_name="Sheet1", extra_sheets=None):
     """Write rows to a simple XLSX workbook without external dependencies."""
     output_path = Path(xlsx_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    headers = _collect_fieldnames(rows)
-    worksheet_rows = [headers]
-    for row in rows:
-        worksheet_rows.append([row.get(header, "") for header in headers])
+    sheet_specs = [(sheet_name, _rows_to_worksheet_rows(rows))]
+    for sheet in extra_sheets or []:
+        extra_name = sheet.get("sheet_name") or "Sheet"
+        extra_rows = _rows_to_worksheet_rows(sheet.get("rows") or [])
+        sheet_specs.append((extra_name, extra_rows))
 
     shared_strings = []
     shared_string_lookup = {}
@@ -50,24 +50,25 @@ def write_table_xlsx(rows, xlsx_path, sheet_name="Sheet1"):
             name = chr(65 + remainder) + name
         return name
 
-    worksheet_xml_rows = []
-    for row_index, row_values in enumerate(worksheet_rows, start=1):
-        cells = []
-        for column_index, value in enumerate(row_values, start=1):
-            cell_ref = f"{excel_column_name(column_index)}{row_index}"
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                cells.append(f'<c r="{cell_ref}"><v>{value}</v></c>')
-            else:
-                string_index = shared_string_index(value)
-                cells.append(f'<c r="{cell_ref}" t="s"><v>{string_index}</v></c>')
-        worksheet_xml_rows.append(f'<row r="{row_index}">{"".join(cells)}</row>')
-
-    worksheet_xml = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-        f'<sheetData>{"".join(worksheet_xml_rows)}</sheetData>'
-        "</worksheet>"
-    )
+    worksheet_xml_map = {}
+    for sheet_index, (_, worksheet_rows) in enumerate(sheet_specs, start=1):
+        worksheet_xml_rows = []
+        for row_index, row_values in enumerate(worksheet_rows, start=1):
+            cells = []
+            for column_index, value in enumerate(row_values, start=1):
+                cell_ref = f"{excel_column_name(column_index)}{row_index}"
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    cells.append(f'<c r="{cell_ref}"><v>{value}</v></c>')
+                else:
+                    string_index = shared_string_index(value)
+                    cells.append(f'<c r="{cell_ref}" t="s"><v>{string_index}</v></c>')
+            worksheet_xml_rows.append(f'<row r="{row_index}">{"".join(cells)}</row>')
+        worksheet_xml_map[sheet_index] = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            f'<sheetData>{"".join(worksheet_xml_rows)}</sheetData>'
+            "</worksheet>"
+        )
 
     shared_strings_xml_items = "".join(
         f"<si><t>{escape(value)}</t></si>" for value in shared_strings
@@ -79,21 +80,36 @@ def write_table_xlsx(rows, xlsx_path, sheet_name="Sheet1"):
         f"{shared_strings_xml_items}</sst>"
     )
 
+    workbook_sheet_entries = []
+    workbook_relationship_entries = []
+    content_type_overrides = []
+    for sheet_index, (sheet_title, _) in enumerate(sheet_specs, start=1):
+        workbook_sheet_entries.append(
+            f'<sheet name="{escape(sheet_title)}" sheetId="{sheet_index}" r:id="rId{sheet_index}"/>'
+        )
+        workbook_relationship_entries.append(
+            f'<Relationship Id="rId{sheet_index}" '
+            'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+            f'Target="worksheets/sheet{sheet_index}.xml"/>'
+        )
+        content_type_overrides.append(
+            f'<Override PartName="/xl/worksheets/sheet{sheet_index}.xml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        )
+    shared_strings_rel_id = len(sheet_specs) + 1
     workbook_xml = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
         'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-        f'<sheets><sheet name="{escape(sheet_name)}" sheetId="1" r:id="rId1"/></sheets>'
+        f'<sheets>{"".join(workbook_sheet_entries)}</sheets>'
         "</workbook>"
     )
 
     workbook_rels_xml = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-        '<Relationship Id="rId1" '
-        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
-        'Target="worksheets/sheet1.xml"/>'
-        '<Relationship Id="rId2" '
+        f'{"".join(workbook_relationship_entries)}'
+        f'<Relationship Id="rId{shared_strings_rel_id}" '
         'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" '
         'Target="sharedStrings.xml"/>'
         "</Relationships>"
@@ -115,8 +131,7 @@ def write_table_xlsx(rows, xlsx_path, sheet_name="Sheet1"):
         '<Default Extension="xml" ContentType="application/xml"/>'
         '<Override PartName="/xl/workbook.xml" '
         'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
-        '<Override PartName="/xl/worksheets/sheet1.xml" '
-        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        f'{"".join(content_type_overrides)}'
         '<Override PartName="/xl/sharedStrings.xml" '
         'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>'
         "</Types>"
@@ -127,17 +142,18 @@ def write_table_xlsx(rows, xlsx_path, sheet_name="Sheet1"):
         archive.writestr("_rels/.rels", root_rels_xml)
         archive.writestr("xl/workbook.xml", workbook_xml)
         archive.writestr("xl/_rels/workbook.xml.rels", workbook_rels_xml)
-        archive.writestr("xl/worksheets/sheet1.xml", worksheet_xml)
+        for sheet_index, worksheet_xml in worksheet_xml_map.items():
+            archive.writestr(f"xl/worksheets/sheet{sheet_index}.xml", worksheet_xml)
         archive.writestr("xl/sharedStrings.xml", shared_strings_xml)
 
     return str(output_path)
 
 
-def write_table_bundle(rows, output_stem, sheet_name):
+def write_table_bundle(rows, output_stem, sheet_name, xlsx_options=None):
     """Write both CSV and XLSX versions of a table and return their paths."""
     stem = Path(output_stem)
     csv_path = write_table_csv(rows, stem.with_suffix(".csv"))
-    xlsx_path = write_table_xlsx(rows, stem.with_suffix(".xlsx"), sheet_name=sheet_name)
+    xlsx_path = write_table_xlsx(rows, stem.with_suffix(".xlsx"), sheet_name=sheet_name, **(xlsx_options or {}))
     return {"csv_path": csv_path, "xlsx_path": xlsx_path}
 
 
@@ -151,6 +167,19 @@ def _collect_fieldnames(rows):
                 seen.add(key)
                 fieldnames.append(key)
     return fieldnames
+
+
+def _rows_to_worksheet_rows(rows):
+    if not rows:
+        return [[]]
+    first_row = rows[0]
+    if isinstance(first_row, dict):
+        headers = _collect_fieldnames(rows)
+        worksheet_rows = [headers]
+        for row in rows:
+            worksheet_rows.append([row.get(header, "") for header in headers])
+        return worksheet_rows
+    return [list(row) if isinstance(row, (list, tuple)) else [row] for row in rows]
 
 
 def create_trend_plot(rows, output_path, title, y_label):

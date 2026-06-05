@@ -43,6 +43,8 @@ class EnvironmentalAssessmentPlugin:
         if self.dialog is None:
             self.dialog = EnvironmentalAssessmentDialog(self.iface)
 
+        if self.dialog.isMinimized():
+            self.dialog.showNormal()
         self.dialog.show()
         self.dialog.raise_()
         self.dialog.activateWindow()

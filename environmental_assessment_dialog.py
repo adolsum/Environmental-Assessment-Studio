@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from datetime import date
 
-from qgis.PyQt.QtCore import QCoreApplication, QDate, Qt, QUrl
+from qgis.PyQt.QtCore import QCoreApplication, QDate, Qt, QTimer, QUrl
 from qgis.PyQt.QtGui import QDesktopServices
 from qgis.PyQt.QtWidgets import (
     QCheckBox,
@@ -21,13 +21,23 @@ from qgis.PyQt.QtWidgets import (
     QMessageBox,
     QPushButton,
     QProgressBar,
+    QScrollArea,
     QSizePolicy,
     QTabWidget,
     QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
-from qgis.core import Qgis, QgsApplication, QgsMapLayerProxyModel, QgsProject, QgsTask, QgsVectorLayer, QgsWkbTypes
+from qgis.core import (
+    Qgis,
+    QgsApplication,
+    QgsDistanceArea,
+    QgsMapLayerProxyModel,
+    QgsProject,
+    QgsTask,
+    QgsVectorLayer,
+    QgsWkbTypes,
+)
 from qgis.gui import QgsMapLayerComboBox
 
 from .dependency_manager import DependencyManager
@@ -37,10 +47,15 @@ from .gee_service import ANALYSIS_DEFINITIONS, AssessmentRequest, EarthEngineAss
 class EnvironmentalAssessmentDialog(QDialog):
     """Popup dialog that drives Earth Engine environmental assessments."""
 
+    SENTINEL_TREND_STACK_MAX_SQ_KM = 2500.0
+    LANDSAT_TREND_STACK_MAX_SQ_KM = 12000.0
+
     ANALYSIS_ITEMS = [
-        ("Land Use Land Cover", "lulc"),
+        ("Land Use Land Cover (Sentinel)", "lulc"),
+        ("Land Use Land Cover (Landsat 8)", "lulc_landsat"),
         ("Change Detection", "change_detection"),
         ("Land Surface Temperature", "lst"),
+        ("Urban Heat Island", "urban_heat_island"),
         ("Flood Analysis", "flood"),
         ("NDVI", "ndvi"),
         ("Land Degradation", "land_degradation"),
@@ -57,7 +72,7 @@ class EnvironmentalAssessmentDialog(QDialog):
         ("Erosion Risk", "erosion_risk"),
         ("Terrain Susceptibility to Erosion / Instability", "terrain_susceptibility"),
         ("Wildfire Risk / Burn Severity", "wildfire_risk"),
-        ("Air Quality / NO2", "air_quality"),
+        ("PM2.5 Air Quality", "air_quality"),
         ("Habitat Fragmentation / Biodiversity Pressure", "habitat_fragmentation"),
         ("Groundwater Recharge / Runoff Potential", "runoff_potential"),
     ]
@@ -65,14 +80,20 @@ class EnvironmentalAssessmentDialog(QDialog):
     ASSESSMENT_DETAILS = {
         "lulc": {
             "summary": "Land Use Land Cover classifies the selected area into standard surface categories such as water, trees, crops, shrub and scrub, built area, and bare ground. This helps users build a baseline environmental map and understand which land-cover classes occupy the most space within the AOI.",
-            "source": "Google Dynamic World",
-            "method": "The plugin looks at satellite land-cover labels inside your area, picks the most common class for each pixel, and then colors the map by class.",
+            "source": "Google Dynamic World (Sentinel-2 derived, 10 m)",
+            "method": "The plugin looks at Dynamic World land-cover labels derived from Sentinel-2 imagery, picks the most common class for each pixel, and then colors the map by class. For yearly trend and change outputs, it uses complete Dynamic World years only so partial current-year coverage does not distort the class areas.",
             "output": "A styled categorical raster, class-area summary tables in square meters and hectares, and optional vector polygons with class fields.",
+        },
+        "lulc_landsat": {
+            "summary": "Land Use Land Cover (Landsat 8) gives users a Landsat-based land-cover comparison option from 2013 onward. It uses a simplified class system so the outputs remain more stable and interpretable at 30 meter resolution.",
+            "source": "USGS Landsat 8 Collection 2 Level 2 (30 m)",
+            "method": "The plugin gathers Landsat 8 images for the selected period, removes cloudy pixels, builds an annual composite, and then groups the land into a simplified set of classes using vegetation, water, built-up, and bare-ground spectral patterns. Trend outputs use complete years only. Landsat 8 LULC is a comparative interpretation layer rather than a strict year-by-year land-accounting product.",
+            "output": "A styled categorical raster for snapshot mode, first-year and last-year rasters for trend mode, class-area trend tables in square meters, summary tables, and optional vector polygons with class fields. Year-to-year class areas may reflect differences in class detail and class separation, not only true land-cover change.",
         },
         "change_detection": {
             "summary": "Change Detection compares the land-cover condition at the beginning of the selected period with the land-cover condition at the end of the selected period. It highlights where change happened and what the transition was, such as shrub and scrub to built area.",
-            "source": "Google Dynamic World",
-            "method": "The plugin makes one land-cover map for the start year and one for the end year, then checks which pixels stayed the same and which ones changed.",
+            "source": "Google Dynamic World (Sentinel-2 derived, 10 m)",
+            "method": "The plugin makes one land-cover map for the start year and one for the end year, then checks which pixels stayed the same and which ones changed. If the requested end year is incomplete in Dynamic World, the plugin uses the latest complete year available for the AOI so the comparison remains trustworthy.",
             "output": "Start-year LULC, end-year LULC, changed-versus-unchanged raster, detailed transition raster, CSV/XLSX transition tables, and optional vector outputs.",
         },
         "lst": {
@@ -80,6 +101,12 @@ class EnvironmentalAssessmentDialog(QDialog):
             "source": "Landsat Collection 2 Level 2",
             "method": "The plugin reads the thermal band from Landsat, converts it to degrees Celsius, and then paints the coolest places in one color and the hottest places in another.",
             "output": "A styled heat raster, summary tables, mean temperature statistics, and a trend surface plus annual change table in trend mode.",
+        },
+        "urban_heat_island": {
+            "summary": "Urban Heat Island maps where land surfaces are hotter or cooler than the average land-surface temperature inside the selected AOI. It helps identify heat-stress pockets around built-up, bare, paved, or sparsely vegetated surfaces.",
+            "source": "Landsat Collection 2 Level 2 thermal surface temperature. Atmospheric temperature from ERA5-Land may be used as interpretation context, but the default raster is LST-based.",
+            "method": "The plugin calculates Landsat land-surface temperature in Celsius, estimates the AOI mean LST for the selected period, and subtracts that mean from each pixel. Positive values show hotter-than-local-average surfaces; negative values show cooler areas. Atmospheric 2 m air-temperature data is much coarser than Landsat and is therefore documented as context rather than blended into the default raster.",
+            "output": "A continuous LST-based heat-intensity raster, class-area summary tables, and annual trend outputs showing whether surface heat intensity is increasing or decreasing.",
         },
         "flood": {
             "summary": "Flood Analysis uses radar backscatter behavior to screen for likely water extent during the selected period. It is especially useful where clouds affect optical imagery.",
@@ -90,6 +117,7 @@ class EnvironmentalAssessmentDialog(QDialog):
         "ndvi": {
             "summary": "NDVI measures vegetation vigor by comparing red and near-infrared reflectance. It helps identify healthy vegetation, stressed vegetation, sparse cover, and non-vegetated surfaces.",
             "source": "Landsat Collection 2 Level 2",
+            "method": "The plugin uses Landsat surface reflectance to calculate NDVI. A water safeguard uses Landsat water indices so likely open water is assigned to the water class rather than the bare/stressed class. At 30 m resolution, one pixel can mix roofs, bare soil, trees, grass and shadow, so low positive NDVI should be read as sparse or mixed cover rather than definite vegetation.",
             "output": "A vegetation-condition raster with a clear legend, summary tables, and annual trend outputs.",
         },
         "land_degradation": {
@@ -133,14 +161,15 @@ class EnvironmentalAssessmentDialog(QDialog):
             "output": "A classified sequestration raster, summary tables with pounds conversions, and annual trend outputs.",
         },
         "solar_radiation": {
-            "summary": "Solar Radiation Assessment shows the relative intensity of solar radiation using MODIS photosynthetically active radiation observations for the selected period. It supports site suitability review, solar exposure interpretation, and environmental screening with a finer display surface than the earlier coarse reanalysis source.",
+            "summary": "Solar Radiation Assessment shows the relative intensity of solar radiation using MODIS photosynthetically active radiation observations for the selected period. It supports site suitability review, solar exposure interpretation, and environmental screening with a detailed radiation surface.",
             "source": "MODIS MCD18C2 PAR",
-            "method": "The plugin averages the available solar-radiation measurements for your date range and then colors lower and higher radiation values across the area.",
-            "output": "A classified solar-radiation raster clipped to the AOI boundary, summary tables, and trend outputs.",
+            "method": "The plugin averages the available MODIS solar-radiation measurements for your date range and then colors lower and higher radiation values across the area.",
+            "output": "A solar-radiation raster clipped to the AOI boundary, summary tables, and trend outputs.",
         },
         "ndwi": {
             "summary": "NDWI highlights surface wetness and open-water response using optical reflectance behavior. It is useful for screening wetlands, surface moisture distribution, and general water-related landscape conditions.",
             "source": "Landsat Collection 2 Level 2",
+            "method": "The plugin uses Landsat surface reflectance to calculate a water/moisture response based on modified NDWI, NDMI, and a built-up suppression term from NDBI. Values are clamped to the standard -1 to 1 index range. This reduces false wetness over roofs, paved surfaces, and bare built-up areas. Small, shallow, turbid or vegetated dams can still fall into wet or mixed-water classes because 30 m pixels may include water, banks, sediment and vegetation together.",
             "output": "A moisture and water-response raster, summary tables, and annual trend outputs.",
         },
         "precipitation_anomaly": {
@@ -172,9 +201,10 @@ class EnvironmentalAssessmentDialog(QDialog):
             "output": "A classified wildfire-pressure raster, summary tables, and annual trend outputs.",
         },
         "air_quality": {
-            "summary": "Air Quality / NO2 measures tropospheric nitrogen dioxide as a broad indicator of air-quality stress and combustion-related pollution pressure. It supports regional pollution screening.",
-            "source": "Copernicus Sentinel-5P NO2",
-            "output": "A classified NO2 raster, summary tables, and annual trend outputs.",
+            "summary": "PM2.5 Air Quality maps estimated fine particulate matter concentration in micrograms per cubic meter. It supports regional air-quality screening and exposure interpretation.",
+            "source": "Global satellite-derived ground-level PM2.5, ACAG / SatPM-style open Earth Engine collection",
+            "method": "The plugin reads annual satellite-derived PM2.5 concentration surfaces, clips them to the AOI, and summarizes the mean concentration in ug/m3. If the selected period extends beyond the available PM2.5 archive, the nearest available annual data are used and documented in the metadata.",
+            "output": "A classified PM2.5 concentration raster in ug/m3, summary tables, metadata, and annual trend outputs where available.",
         },
         "habitat_fragmentation": {
             "summary": "Habitat Fragmentation / Biodiversity Pressure screens ecological pressure by mapping fragmented forest structure and nearby forest loss. It helps identify landscapes where habitat continuity may be breaking down.",
@@ -194,12 +224,19 @@ class EnvironmentalAssessmentDialog(QDialog):
         self.service = EarthEngineAssessmentService()
         self.dependency_manager = DependencyManager()
         self.current_task = None
+        self.dependency_task = None
+        self._displayed_progress = 0
+        self._progress_pulse_index = 0
+        self._progress_stage_message = self.tr("Ready")
+        self._progress_pulse_timer = QTimer(self)
+        self._progress_pulse_timer.setInterval(700)
+        self._progress_pulse_timer.timeout.connect(self._advance_progress_pulse)
         self.setObjectName("EnvironmentalAssessmentDialog")
         self.setWindowTitle(self.tr("Environmental Assessment Studio"))
         self.setWindowFlags(self.windowFlags() | self._minimize_button_flag())
         self.setWindowModality(self._non_modal_value())
-        self.resize(1120, 660)
-        self.setMinimumSize(980, 620)
+        self.resize(980, 620)
+        self.setMinimumSize(760, 540)
         self.setLayout(self._build_ui())
         self._sync_mode_state()
         self._update_guidance()
@@ -265,6 +302,7 @@ class EnvironmentalAssessmentDialog(QDialog):
         for label, analysis_id in self.ANALYSIS_ITEMS:
             self.analysis_combo.addItem(label, analysis_id)
         self.analysis_combo.currentIndexChanged.connect(self._update_guidance)
+        self.analysis_combo.currentIndexChanged.connect(self._sync_mode_state)
         form_layout.addRow(self._field_label(self.tr("Assessment Type")), self.analysis_combo)
 
         self.mode_combo = QComboBox(params_group)
@@ -309,6 +347,21 @@ class EnvironmentalAssessmentDialog(QDialog):
         )
         self.generate_reports_checkbox.setChecked(True)
         form_layout.addRow(self._field_label(self.tr("Generate Reports")), self.generate_reports_checkbox)
+
+        self.export_landsat_stack_checkbox = QCheckBox(
+            self.tr("Export Processed Satellite Band Stacks for custom sample training/classification"),
+            params_group,
+        )
+        self.export_landsat_stack_checkbox.setChecked(False)
+        form_layout.addRow("", self.export_landsat_stack_checkbox)
+        self.export_landsat_stack_hint = QLabel(
+            self.tr("Band stack exports are large and may significantly increase runtime."),
+            params_group,
+        )
+        self.export_landsat_stack_hint.setWordWrap(True)
+        self.export_landsat_stack_hint.setContentsMargins(0, -6, 0, 0)
+        self.export_landsat_stack_hint.setStyleSheet("color:#64748b; font-size:11px; margin-top:-6px;")
+        form_layout.addRow("", self.export_landsat_stack_hint)
 
         params_layout.addLayout(form_layout)
 
@@ -365,8 +418,8 @@ class EnvironmentalAssessmentDialog(QDialog):
         self.settings_help = QLabel(
             self.tr(
                 "The plugin already runs inside QGIS Python. If Earth Engine is missing, use these buttons to "
-                "download it into the plugin folder, then authenticate and initialize it with your registered "
-                "Google Cloud project."
+                "download it into a persistent QGIS profile folder, then authenticate and initialize it with your "
+                "registered Google Cloud project."
             ),
             settings_group,
         )
@@ -406,6 +459,8 @@ class EnvironmentalAssessmentDialog(QDialog):
         ee_access_button = QPushButton(self.tr("Open Earth Engine Access"), signup_page)
         ee_register_button = QPushButton(self.tr("Open Project Registration"), signup_page)
         gcp_projects_button = QPushButton(self.tr("Open Cloud Projects"), signup_page)
+        setup_video_button = QPushButton(self.tr("Watch Setup Tutorial"), signup_page)
+        run_video_button = QPushButton(self.tr("Watch Assessment Tutorial"), signup_page)
         ee_access_button.clicked.connect(
             lambda: QDesktopServices.openUrl(QUrl("https://developers.google.com/earth-engine/guides/access"))
         )
@@ -415,9 +470,17 @@ class EnvironmentalAssessmentDialog(QDialog):
         gcp_projects_button.clicked.connect(
             lambda: QDesktopServices.openUrl(QUrl("https://console.cloud.google.com/projectcreate"))
         )
+        setup_video_button.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl("https://youtu.be/pnkM7dhcORw"))
+        )
+        run_video_button.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl("https://youtu.be/2sYAkivyf5M"))
+        )
         signup_buttons.addWidget(ee_access_button)
         signup_buttons.addWidget(ee_register_button)
         signup_buttons.addWidget(gcp_projects_button)
+        signup_buttons.addWidget(setup_video_button)
+        signup_buttons.addWidget(run_video_button)
         signup_layout.addLayout(signup_buttons)
         settings_tabs.addTab(signup_page, self.tr("Earth Engine Setup"))
 
@@ -478,7 +541,14 @@ class EnvironmentalAssessmentDialog(QDialog):
 
         content_layout.addWidget(params_group, 3)
         content_layout.addWidget(help_group, 2)
-        root_layout.addLayout(content_layout)
+
+        content_widget = QWidget(self)
+        content_widget.setLayout(content_layout)
+
+        scroll_area = QScrollArea(self)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setWidget(content_widget)
+        root_layout.addWidget(scroll_area)
         self.update_dependency_status()
         return root_layout
 
@@ -565,6 +635,29 @@ class EnvironmentalAssessmentDialog(QDialog):
             self.interval_combo.setEnabled(False)
             self.generate_reports_checkbox.setEnabled(True)
 
+        analysis_id = self.analysis_combo.currentData()
+        can_export_stack = analysis_id in {"lulc", "lulc_landsat"}
+        self.export_landsat_stack_checkbox.setEnabled(can_export_stack)
+        if analysis_id == "lulc_landsat":
+            self.export_landsat_stack_checkbox.setToolTip(
+                self.tr(
+                    "Exports an analysis-ready Landsat stack with radiometrically corrected surface reflectance, "
+                    "thermal band, and derived indices so users can create their own training samples."
+                )
+            )
+        elif analysis_id == "lulc":
+            self.export_landsat_stack_checkbox.setToolTip(
+                self.tr(
+                    "Exports an analysis-ready Sentinel-2 surface reflectance stack with key spectral bands "
+                    "and derived indices so users can create their own training samples."
+                )
+            )
+        else:
+            self.export_landsat_stack_checkbox.setChecked(False)
+            self.export_landsat_stack_checkbox.setToolTip(
+                self.tr("This option is available for Sentinel and Landsat land-cover assessments.")
+            )
+
     def _update_guidance(self):
         analysis_id = self.analysis_combo.currentData()
         detail = self.ASSESSMENT_DETAILS.get(analysis_id, {})
@@ -627,6 +720,11 @@ class EnvironmentalAssessmentDialog(QDialog):
             <a href="https://code.earthengine.google.com/register">project registration</a>,
             <a href="https://console.cloud.google.com/projectcreate">create Cloud project</a>.
           </p>
+          <p style="margin:8px 0 0 0;">
+            Video tutorials:
+            <a href="https://youtu.be/pnkM7dhcORw">How to setup the plugin and generate a GEE Project ID</a>,
+            <a href="https://youtu.be/2sYAkivyf5M">How to run an assessment</a>.
+          </p>
         </div>
         """
 
@@ -661,6 +759,9 @@ class EnvironmentalAssessmentDialog(QDialog):
             self._show_warning(self.tr("AOI preparation failed: {0}").format(str(exc)))
             return
 
+        if not self._validate_processed_stack_request(aoi_layer):
+            return
+
         request = AssessmentRequest(
             analysis_id=self.analysis_combo.currentData(),
             mode=self.mode_combo.currentData(),
@@ -668,8 +769,12 @@ class EnvironmentalAssessmentDialog(QDialog):
             end_date=self._qdate_to_date(self.end_date.date()),
             output_dir=output_dir,
             output_name=self.output_name.text().strip(),
+            aoi_name=aoi_layer.name(),
             interval_years=int(self.interval_combo.currentData() or 1),
             generate_reports=self.generate_reports_checkbox.isChecked(),
+            convert_to_vector=self.convert_to_vector_checkbox.isChecked(),
+            export_processed_stack=self.export_landsat_stack_checkbox.isChecked(),
+            export_landsat_stack=self.export_landsat_stack_checkbox.isChecked(),
             aoi_geometry_jsons=aoi_geometry_jsons,
         )
 
@@ -700,30 +805,43 @@ class EnvironmentalAssessmentDialog(QDialog):
         self.close_button.setEnabled(True)
         self.cancel_button.setEnabled(is_busy)
         if is_busy:
-            self.progress_bar.setRange(0, 0)
-            self.progress_bar.setFormat(self.tr("Running in background..."))
+            self._displayed_progress = 0
+            self._progress_pulse_index = 0
+            self._progress_stage_message = self.tr("Starting assessment")
+            self.progress_bar.setRange(0, 100)
+            self.progress_bar.setValue(0)
+            self.progress_bar.setFormat(self.tr("Starting assessment (0%)"))
+            self._progress_pulse_timer.start()
         else:
+            self._progress_pulse_timer.stop()
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(100)
             self.progress_bar.setFormat(self.tr("Completed"))
 
     def _run_assessment_task(self, task, request):
+        setattr(task, "stage_message", self.tr("Starting assessment..."))
+        setattr(task, "last_progress_value", 0)
         task.setProgress(5)
         result = self.service.run(request, task=task)
         task.setProgress(100)
         return {"request": request, "result": result}
 
     def _on_task_progress_changed(self, value):
-        if self.progress_bar.maximum() == 0:
-            return
-        self.progress_bar.setValue(int(value))
-        self.progress_bar.setFormat(self.tr("Progress: {0}%").format(int(value)))
+        self._displayed_progress = max(self._displayed_progress, int(value))
+        self.progress_bar.setValue(self._displayed_progress)
+        stage_message = self.tr("Working...")
+        if self.current_task is not None:
+            stage_message = getattr(self.current_task, "stage_message", stage_message) or stage_message
+        self._progress_stage_message = stage_message.rstrip(". ")
+        pulse = "." * ((self._progress_pulse_index % 3) + 1)
+        self.progress_bar.setFormat(self.tr("{0}{1} ({2}%)").format(self._progress_stage_message, pulse, self._displayed_progress))
 
     def _on_assessment_task_finished(self, exception, task_result=None):
         self._set_run_busy(False)
         self.current_task = None
 
         if exception is not None:
+            self._progress_pulse_timer.stop()
             self.progress_bar.setValue(0)
             self.progress_bar.setFormat(self.tr("Failed"))
             message = self.tr("Assessment failed: {0}").format(str(exception))
@@ -754,6 +872,20 @@ class EnvironmentalAssessmentDialog(QDialog):
         )
         QMessageBox.information(self, self.tr("Environmental Assessment Studio"), message)
 
+    def _advance_progress_pulse(self):
+        if self.current_task is None:
+            self._progress_pulse_timer.stop()
+            return
+        self._progress_pulse_index = (self._progress_pulse_index + 1) % 3
+        pulse = "." * (self._progress_pulse_index + 1)
+        self.progress_bar.setFormat(
+            self.tr("{0}{1} ({2}%)").format(
+                self._progress_stage_message or self.tr("Working"),
+                pulse,
+                self._displayed_progress,
+            )
+        )
+
     def update_dependency_status(self):
         available = self.dependency_manager.earth_engine_available()
         python_path = self.dependency_manager.qgis_python_path()
@@ -764,7 +896,7 @@ class EnvironmentalAssessmentDialog(QDialog):
                 self.tr(
                     "Earth Engine status: Installed and available.\n"
                     "QGIS Python: {0}\n"
-                    "Plugin dependency folder: {1}\n"
+                    "Persistent dependency folder: {1}\n"
                     "Earth Engine project: {2}"
                 ).format(
                     python_path,
@@ -775,46 +907,79 @@ class EnvironmentalAssessmentDialog(QDialog):
             self.dependency_status.setStyleSheet("color:#166534; font-weight:600;")
             self.run_button.setEnabled(True)
         else:
+            import_error = self.dependency_manager.earth_engine_import_error()
+            import_error_text = (
+                self.tr("\nDetected issue: {0}").format(import_error)
+                if import_error
+                else ""
+            )
             self.dependency_status.setText(
                 self.tr(
-                    "Earth Engine status: Not installed in the plugin dependency folder yet.\n"
+                    "Earth Engine status: Not installed in the persistent dependency folder yet.\n"
                     "QGIS Python: {0}\n"
-                    "Plugin dependency folder: {1}\n"
+                    "Persistent dependency folder: {1}\n"
                     "Earth Engine project: {2}\n"
-                    "Use 'Install Or Upgrade Earth Engine' below to download it from the official Python package source."
+                    "Use 'Install Or Upgrade Earth Engine' below to download it from the official Python package source.{3}"
                 ).format(
                     python_path,
                     dependency_path,
                     self.dependency_manager.project_id() or self.tr("Not set"),
+                    import_error_text,
                 )
             )
             self.dependency_status.setStyleSheet("color:#9a3412; font-weight:600;")
             self.run_button.setEnabled(False)
 
     def install_earth_engine_dependency(self):
+        if self.dependency_task is not None:
+            self.iface.messageBar().pushMessage(
+                self.tr("Environmental Assessment Studio"),
+                self.tr("Earth Engine dependency installation is already running in the background."),
+                level=Qgis.Info,
+                duration=5,
+            )
+            return
         self._set_settings_busy(True)
         self.iface.messageBar().pushMessage(
             self.tr("Environmental Assessment Studio"),
-            self.tr("Downloading and installing Earth Engine into the plugin dependency folder..."),
+            self.tr("Downloading and installing Earth Engine in the background. QGIS will remain usable."),
             level=Qgis.Info,
             duration=4,
         )
-        try:
-            success, stdout_text, stderr_text = self.dependency_manager.install_earth_engine()
-        except Exception as exc:
-            self._show_warning(self.tr("Dependency installation failed: {0}").format(str(exc)))
-            return
-        finally:
-            self._set_settings_busy(False)
+        task = QgsTask.fromFunction(
+            self.tr("Install Earth Engine dependencies"),
+            self._install_earth_engine_dependency_task,
+            on_finished=self._on_dependency_install_finished,
+        )
+        self.dependency_task = task
+        QgsApplication.taskManager().addTask(task)
 
-        self.update_dependency_status()
+    def _install_earth_engine_dependency_task(self, task):  # noqa: ARG002
+        return self.dependency_manager.install_earth_engine()
+
+    def _on_dependency_install_finished(self, exception, task_result=None):
+        self.dependency_task = None
+        self._set_settings_busy(False)
+        try:
+            self.update_dependency_status()
+        except Exception:
+            pass
+        if exception is not None:
+            self._show_warning(self.tr("Dependency installation failed: {0}").format(str(exception)))
+            return
+        if not task_result:
+            self._show_warning(self.tr("Dependency installation failed: no result was returned by the background task."))
+            return
+
+        success, stdout_text, stderr_text = task_result
         if success:
             QMessageBox.information(
                 self,
                 self.tr("Environmental Assessment Studio"),
                 self.tr(
-                    "Earth Engine was downloaded and installed successfully into the plugin folder.\n\n"
-                    "Next: click 'Authenticate Earth Engine', then 'Initialize Earth Engine'."
+                    "Earth Engine was downloaded and installed successfully into the persistent QGIS profile dependency folder.\n\n"
+                    "Next: click 'Authenticate Earth Engine' and 'Initialize Earth Engine' if needed. "
+                    "A restart is only recommended after an upgrade if QGIS still reports an old or incompatible dependency."
                 ),
             )
             return
@@ -823,22 +988,46 @@ class EnvironmentalAssessmentDialog(QDialog):
         self._show_warning(self.tr("Earth Engine installation failed.\n\n{0}").format(details))
 
     def authenticate_earth_engine(self):
+        if self.dependency_task is not None:
+            self.iface.messageBar().pushMessage(
+                self.tr("Environmental Assessment Studio"),
+                self.tr("Another Earth Engine setup task is already running."),
+                level=Qgis.Info,
+                duration=5,
+            )
+            return
         self._set_settings_busy(True)
-        try:
-            self.dependency_manager.authenticate_earth_engine()
-        except Exception as exc:
+        self.iface.messageBar().pushMessage(
+            self.tr("Environmental Assessment Studio"),
+            self.tr("Earth Engine authentication is running in the background."),
+            level=Qgis.Info,
+            duration=4,
+        )
+        task = QgsTask.fromFunction(
+            self.tr("Authenticate Earth Engine"),
+            self._authenticate_earth_engine_task,
+            on_finished=self._on_authenticate_earth_engine_finished,
+        )
+        self.dependency_task = task
+        QgsApplication.taskManager().addTask(task)
+
+    def _authenticate_earth_engine_task(self, task):  # noqa: ARG002
+        self.dependency_manager.authenticate_earth_engine()
+        return True
+
+    def _on_authenticate_earth_engine_finished(self, exception, task_result=None):  # noqa: ARG002
+        self.dependency_task = None
+        self._set_settings_busy(False)
+        self.update_dependency_status()
+        if exception is not None:
             self._show_warning(
                 self.tr(
                     "Earth Engine authentication failed: {0}\n\n"
                     "Make sure your Google account has access to Earth Engine and that your Google Cloud project "
                     "is registered and enabled for Earth Engine."
-                ).format(str(exc))
+                ).format(str(exception))
             )
             return
-        finally:
-            self._set_settings_busy(False)
-
-        self.update_dependency_status()
         QMessageBox.information(
             self,
             self.tr("Environmental Assessment Studio"),
@@ -846,16 +1035,40 @@ class EnvironmentalAssessmentDialog(QDialog):
         )
 
     def initialize_earth_engine(self):
-        self._set_settings_busy(True)
-        try:
-            self.dependency_manager.initialize_earth_engine()
-        except Exception as exc:
-            self._show_warning(self.tr("Earth Engine initialization failed: {0}").format(str(exc)))
+        if self.dependency_task is not None:
+            self.iface.messageBar().pushMessage(
+                self.tr("Environmental Assessment Studio"),
+                self.tr("Another Earth Engine setup task is already running."),
+                level=Qgis.Info,
+                duration=5,
+            )
             return
-        finally:
-            self._set_settings_busy(False)
+        self._set_settings_busy(True)
+        self.iface.messageBar().pushMessage(
+            self.tr("Environmental Assessment Studio"),
+            self.tr("Earth Engine initialization is running in the background."),
+            level=Qgis.Info,
+            duration=4,
+        )
+        task = QgsTask.fromFunction(
+            self.tr("Initialize Earth Engine"),
+            self._initialize_earth_engine_task,
+            on_finished=self._on_initialize_earth_engine_finished,
+        )
+        self.dependency_task = task
+        QgsApplication.taskManager().addTask(task)
 
+    def _initialize_earth_engine_task(self, task):  # noqa: ARG002
+        self.dependency_manager.initialize_earth_engine()
+        return True
+
+    def _on_initialize_earth_engine_finished(self, exception, task_result=None):  # noqa: ARG002
+        self.dependency_task = None
+        self._set_settings_busy(False)
         self.update_dependency_status()
+        if exception is not None:
+            self._show_warning(self.tr("Earth Engine initialization failed: {0}").format(str(exception)))
+            return
         QMessageBox.information(
             self,
             self.tr("Environmental Assessment Studio"),
@@ -926,12 +1139,14 @@ class EnvironmentalAssessmentDialog(QDialog):
                     raster_output.get("mode", request.mode),
                     custom_classes=raster_output.get("custom_classes"),
                     custom_range_classes=raster_output.get("custom_range_classes"),
+                    skip_style=raster_output.get("skip_style", False),
+                    value_scale=raster_output.get("value_scale", 1.0),
                 )
             )
-            if self.convert_to_vector_checkbox.isChecked():
+            if self.convert_to_vector_checkbox.isChecked() and raster_output.get("allow_vector", True):
                 vector_result = self.service.convert_raster_to_vector(
                     raster_output["path"],
-                    request.output_dir,
+                    result.get("output_dir", request.output_dir),
                     request.output_name or raster_output.get("label", request.analysis_id),
                     raster_output.get("analysis_id", request.analysis_id),
                     raster_output.get("mode", request.mode),
@@ -963,6 +1178,8 @@ class EnvironmentalAssessmentDialog(QDialog):
                 lines.append(self.tr("Summary table (XLSX): {0}").format(result.get("summary_table_xlsx_path")))
             if result.get("summary_table_csv_path"):
                 lines.append(self.tr("Summary table (CSV): {0}").format(result.get("summary_table_csv_path")))
+            for raw_stack_path in result.get("raw_stack_paths", []):
+                lines.append(self.tr("Processed stack: {0}").format(raw_stack_path))
             for vector_path in result.get("vector_paths", []):
                 lines.append(self.tr("Vector output: {0}").format(vector_path))
         else:
@@ -983,6 +1200,8 @@ class EnvironmentalAssessmentDialog(QDialog):
                 lines.append(self.tr("Summary table (XLSX): {0}").format(result.get("summary_table_xlsx_path")))
             if result.get("summary_table_csv_path"):
                 lines.append(self.tr("Summary table (CSV): {0}").format(result.get("summary_table_csv_path")))
+            for raw_stack_path in result.get("raw_stack_paths", []):
+                lines.append(self.tr("Processed stack: {0}").format(raw_stack_path))
             for vector_path in result.get("vector_paths", []):
                 lines.append(self.tr("Vector output: {0}").format(vector_path))
 
@@ -994,3 +1213,51 @@ class EnvironmentalAssessmentDialog(QDialog):
 
     def _show_warning(self, message):
         QMessageBox.warning(self, self.tr("Environmental Assessment Studio"), message)
+
+    def _validate_processed_stack_request(self, aoi_layer):
+        if not self.export_landsat_stack_checkbox.isChecked():
+            return True
+        if self.mode_combo.currentData() != "trend":
+            return True
+
+        analysis_id = self.analysis_combo.currentData()
+        if analysis_id not in {"lulc", "lulc_landsat"}:
+            return True
+
+        area_sq_km = self._aoi_area_sq_km(aoi_layer)
+        if area_sq_km is None:
+            return True
+
+        if analysis_id == "lulc":
+            max_sq_km = self.SENTINEL_TREND_STACK_MAX_SQ_KM
+            dataset_name = self.tr("Sentinel-2")
+        else:
+            max_sq_km = self.LANDSAT_TREND_STACK_MAX_SQ_KM
+            dataset_name = self.tr("Landsat")
+
+        if area_sq_km <= max_sq_km:
+            return True
+
+        self._show_warning(
+            self.tr(
+                "The selected AOI is about {0:,.0f} sq km, which is too large for a combined {1} trend analysis "
+                "with processed satellite band stacks enabled.\n\n"
+                "Please run the trend assessment without processed band stacks, then export the processed band stacks "
+                "as single-period outputs for the specific years you want to use for custom sample training/classification."
+            ).format(area_sq_km, dataset_name)
+        )
+        return False
+
+    def _aoi_area_sq_km(self, layer):
+        try:
+            distance = QgsDistanceArea()
+            distance.setSourceCrs(layer.crs(), QgsProject.instance().transformContext())
+            distance.setEllipsoid(QgsProject.instance().ellipsoid() or "WGS84")
+            area_sq_m = 0.0
+            for feature in layer.getFeatures():
+                geometry = feature.geometry()
+                if geometry and not geometry.isEmpty():
+                    area_sq_m += distance.measureArea(geometry)
+            return area_sq_m / 1_000_000.0
+        except Exception:
+            return None
